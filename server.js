@@ -73,10 +73,16 @@ passport.deserializeUser(async (id, done) => {
 
 // Connect to MongoDB
 mongoose.connect(process.env.MONGODB_URI)
-    .then(() => console.log('Connected to MongoDB'))
-    .catch((err) => console.log('MongoDB connection error:', err));
+.then(() => console.log('Connected to MongoDB'))
+.catch((err) => console.log('MongoDB connection error:', err));
 
 // Authentication Routes
+app.get('/', (req, res) => {
+    console.log('Root page accessed, req.user:', req.user ? req.user.email : 'No user');
+    if (!req.user) return res.redirect('/login'); // Yeh ensure karega login redirect
+    res.sendFile(__dirname + '/public/index.html');
+});
+
 app.get('/login', (req, res) => {
     console.log('Login page accessed, req.user:', req.user ? req.user.email : 'No user');
     res.sendFile(__dirname + '/public/login.html');
@@ -100,11 +106,6 @@ app.post('/register', async (req, res) => {
     }
 });
 
-app.get('/', (req, res) => {
-    console.log('Root page accessed, req.user:', req.user ? req.user.email : 'No user');
-    if (!req.user) return res.redirect('/login'); // Yeh ensure karega login redirect
-    res.sendFile(__dirname + '/public/index.html');
-});
 
 // Socket middleware with session
 io.use(sharedSession(expressSession, {
