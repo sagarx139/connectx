@@ -18,17 +18,17 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
     cors: {
-        origin: "https://connectx-ashen.vercel.app", // Vercel URL
+        origin: "https://connectx-ashen.vercel.app",
         methods: ["GET", "POST"]
     }
 });
 
 // Middleware
 const expressSession = session({
-    secret: process.env.SESSION_SECRET || 'your-secret-key', // Use env variable
+    secret: process.env.SESSION_SECRET || 'your-secret-key',
     resave: false,
     saveUninitialized: true,
-    cookie: { secure: process.env.NODE_ENV === 'production' } // Secure cookie for HTTPS
+    cookie: { secure: process.env.NODE_ENV === 'production' }
 });
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -46,7 +46,6 @@ passport.use(new LocalStrategy(
     async (email, password, done) => {
         try {
             const user = await User.findOne({ email });
-            console.log('Auth attempt for email:', email, 'User found:', user ? 'Yes' : 'No');
             if (!user) return done(null, false, { message: 'Incorrect email' });
             const isMatch = await user.comparePassword(password);
             if (!isMatch) return done(null, false, { message: 'Incorrect password' });
@@ -57,14 +56,10 @@ passport.use(new LocalStrategy(
     }
 ));
 
-passport.serializeUser((user, done) => {
-    console.log('Serializing user:', user.email);
-    done(null, user.id);
-});
+passport.serializeUser((user, done) => done(null, user.id));
 passport.deserializeUser(async (id, done) => {
     try {
         const user = await User.findById(id);
-        console.log('Deserializing user ID:', id, 'User:', user ? user.email : 'No user');
         done(null, user);
     } catch (err) {
         done(err);
@@ -76,15 +71,11 @@ mongoose.connect(process.env.MONGODB_URI)
     .then(() => console.log('Connected to MongoDB'))
     .catch((err) => console.log('MongoDB connection error:', err));
 
-// Authentication Routes
-app.get('/login', (req, res) => {
-    console.log('Login page accessed, req.user:', req.user ? req.user.email : 'No user');
-    res.sendFile(__dirname + '/public/login.html');
-});
+// Routes
+app.get('/login', (req, res) => res.sendFile(__dirname + '/public/login.html'));
 app.post('/login', passport.authenticate('local', {
     successRedirect: '/',
-    failureRedirect: '/login',
-    failureFlash: true
+    failureRedirect: '/login'
 }));
 app.get('/register', (req, res) => res.sendFile(__dirname + '/public/register.html'));
 app.post('/register', async (req, res) => {
@@ -101,84 +92,40 @@ app.post('/register', async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-    console.log('Root page accessed, req.user:', req.user ? req.user.email : 'No user');
-    if (!req.user) return res.redirect('/login'); // Yeh ensure karega login redirect
+    if (!req.user) return res.redirect('/login');
     res.sendFile(__dirname + '/public/index.html');
 });
 
-// Socket middleware with session
+// Socket.io setup
 io.use(sharedSession(expressSession, {
     autoSave: true,
-    saveUninitialized: true,
-    customSessionStore: {
-        get: (sid, callback) => {
-            console.log('Session get for sid:', sid);
-            callback(null, null);
-        },
-        set: (sid, session, callback) => {
-            console.log('Session set for sid:', sid);
-            callback(null);
-        },
-        destroy: (sid, callback) => {
-            console.log('Session destroy for sid:', sid);
-            callback(null);
-        },
-    }
+    saveUninitialized: true
 }));
 
-// Handle socket events
 io.on('connection', (socket) => {
-    console.log('New user connected', socket.handshake.session ? socket.handshake.session.passport : 'No session');
-
-    const handleUser = (userId) => {
-        User.findById(userId).then(user => {
-            if (user) {
-                socket.request.user = user;
-                console.log('Emitting username:', user.email);
-                socket.emit('setUsername', { email: user.email });
-            } else {
-                console.log('No user found for session');
-                socket.emit('setUsername', { email: 'Guest' });
-            }
+    console.log('New user connected');
+    if (socket.handshake.session?.passport?.user) {
+        User.findById(socket.handshake.session.passport.user).then(user => {
+            if (user) socket.emit('setUsername', { email: user.email });
+            else socket.emit('setUsername', { email: 'Guest' });
         }).catch(err => {
             console.log('Error finding user:', err);
             socket.emit('setUsername', { email: 'Guest' });
         });
-    };
-
-    if (socket.handshake.session && socket.handshake.session.passport) {
-        handleUser(socket.handshake.session.passport.user);
     } else {
-        console.log('No session on connection');
         socket.emit('setUsername', { email: 'Guest' });
     }
 
-    socket.on('requestUsername', () => {
-        if (socket.handshake.session && socket.handshake.session.passport) {
-            handleUser(socket.handshake.session.passport.user);
-        } else {
-            console.log('No session on requestUsername');
-            socket.emit('setUsername', { email: 'Guest' });
-        }
-    });
-
     socket.on('joinRoom', (room) => {
-        if (!socket.request.user) {
-            console.log('Unauthorized join attempt');
-            return;
-        }
+        if (!socket.request.user) return;
         socket.join(room);
-        console.log(`User ${socket.request.user.email} joined room: ${room}`);
         Message.find({ room }).sort({ timestamp: -1 }).limit(50).then(messages => {
             socket.emit('loadMessages', messages.reverse());
         }).catch(err => console.log('Error loading messages:', err));
     });
 
     socket.on('chatMessage', async ({ msg, room, username }) => {
-        if (!socket.request.user || !msg.trim() || !room || !username) {
-            console.log('Invalid chat message attempt');
-            return;
-        }
+        if (!socket.request.user || !msg.trim() || !room || !username) return;
         const newMessage = new Message({ content: msg, username, room });
         try {
             await newMessage.save();
@@ -189,32 +136,14 @@ io.on('connection', (socket) => {
     });
 
     socket.on('logout', () => {
-        if (socket.handshake.session) {
-            socket.handshake.session.destroy(err => {
-                if (err) console.log('Session destroy error:', err);
-            });
-        }
+        if (socket.handshake.session) socket.handshake.session.destroy();
         socket.disconnect();
     });
 
-    socket.on('disconnect', () => {
-        console.log('User disconnected');
-    });
+    socket.on('disconnect', () => console.log('User disconnected'));
 });
 
-// Vercel ke liye port dynamic rakho
+// Vercel ke liye
 const port = process.env.PORT || 3000;
-app.listen(port, () => {
-    console.log(`Server running on port ${port}`);
-});
-
-// Handle uncaught exceptions to prevent crash
-process.on('uncaughtException', (err) => {
-    console.error('Uncaught Exception:', err.stack);
-});
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('Unhandled Rejection at:', promise, 'reason:', reason.stack);
-});
-
-// Vercel ke liye export
+app.listen(port, () => console.log(`Server on ${port}`));
 module.exports = app;
