@@ -18,17 +18,17 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
     cors: {
-        origin: "https://connectx-ashen.vercel.app",
+        origin: "https://connectx-ashen.vercel.app", // Vercel URL
         methods: ["GET", "POST"]
     }
 });
 
 // Middleware
 const expressSession = session({
-    secret: process.env.SESSION_SECRET || 'your-secret-key',
+    secret: process.env.SESSION_SECRET || 'your-secret-key', // Use env variable
     resave: false,
-    saveUninitialized: false, // Avoid unnecessary session creation
-    cookie: { secure: process.env.NODE_ENV === 'production' }
+    saveUninitialized: true,
+    cookie: { secure: process.env.NODE_ENV === 'production' } // Secure cookie for HTTPS
 });
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -46,8 +46,9 @@ passport.use(new LocalStrategy(
     async (email, password, done) => {
         try {
             const user = await User.findOne({ email });
+            console.log('Auth attempt for email:', email, 'User found:', user ? 'Yes' : 'No');
             if (!user) return done(null, false, { message: 'Incorrect email' });
-            const isMatch = await bcrypt.compare(password, user.password); // Ensure bcrypt
+            const isMatch = await user.comparePassword(password);
             if (!isMatch) return done(null, false, { message: 'Incorrect password' });
             return done(null, user);
         } catch (err) {
@@ -56,30 +57,34 @@ passport.use(new LocalStrategy(
     }
 ));
 
-passport.serializeUser((user, done) => done(null, user.id));
+passport.serializeUser((user, done) => {
+    console.log('Serializing user:', user.email);
+    done(null, user.id);
+});
 passport.deserializeUser(async (id, done) => {
     try {
         const user = await User.findById(id);
+        console.log('Deserializing user ID:', id, 'User:', user ? user.email : 'No user');
         done(null, user);
     } catch (err) {
         done(err);
     }
 });
 
-// Connect to MongoDB with retry
-mongoose.connect(process.env.MONGODB_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-    serverSelectionTimeoutMS: 5000,
-    autoIndex: false
-}).then(() => console.log('Connected to MongoDB'))
-  .catch((err) => console.log('MongoDB connection error:', err.message));
+// Connect to MongoDB
+mongoose.connect(process.env.MONGODB_URI)
+    .then(() => console.log('Connected to MongoDB'))
+    .catch((err) => console.log('MongoDB connection error:', err));
 
-// Routes
-app.get('/login', (req, res) => res.sendFile(__dirname + '/public/login.html'));
+// Authentication Routes
+app.get('/login', (req, res) => {
+    console.log('Login page accessed, req.user:', req.user ? req.user.email : 'No user');
+    res.sendFile(__dirname + '/public/login.html');
+});
 app.post('/login', passport.authenticate('local', {
     successRedirect: '/',
-    failureRedirect: '/login'
+    failureRedirect: '/login',
+    failureFlash: true
 }));
 app.get('/register', (req, res) => res.sendFile(__dirname + '/public/register.html'));
 app.post('/register', async (req, res) => {
@@ -87,8 +92,7 @@ app.post('/register', async (req, res) => {
     try {
         const existingUser = await User.findOne({ email });
         if (existingUser) return res.status(400).send('User already exists');
-        const hashedPassword = await bcrypt.hash(password, 10);
-        const user = new User({ email, password: hashedPassword });
+        const user = new User({ email, password });
         await user.save();
         res.redirect('/login');
     } catch (err) {
@@ -97,38 +101,84 @@ app.post('/register', async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-    if (!req.user) return res.redirect('/login');
+    console.log('Root page accessed, req.user:', req.user ? req.user.email : 'No user');
+    if (!req.user) return res.redirect('/login'); // Yeh ensure karega login redirect
     res.sendFile(__dirname + '/public/index.html');
 });
 
-// Socket.io setup
+// Socket middleware with session
 io.use(sharedSession(expressSession, {
-    autoSave: true
+    autoSave: true,
+    saveUninitialized: true,
+    customSessionStore: {
+        get: (sid, callback) => {
+            console.log('Session get for sid:', sid);
+            callback(null, null);
+        },
+        set: (sid, session, callback) => {
+            console.log('Session set for sid:', sid);
+            callback(null);
+        },
+        destroy: (sid, callback) => {
+            console.log('Session destroy for sid:', sid);
+            callback(null);
+        },
+    }
 }));
 
+// Handle socket events
 io.on('connection', (socket) => {
-    console.log('New user connected');
-    if (socket.handshake.session?.passport?.user) {
-        User.findById(socket.handshake.session.passport.user).then(user => {
-            socket.emit('setUsername', { email: user ? user.email : 'Guest' });
+    console.log('New user connected', socket.handshake.session ? socket.handshake.session.passport : 'No session');
+
+    const handleUser = (userId) => {
+        User.findById(userId).then(user => {
+            if (user) {
+                socket.request.user = user;
+                console.log('Emitting username:', user.email);
+                socket.emit('setUsername', { email: user.email });
+            } else {
+                console.log('No user found for session');
+                socket.emit('setUsername', { email: 'Guest' });
+            }
         }).catch(err => {
             console.log('Error finding user:', err);
             socket.emit('setUsername', { email: 'Guest' });
         });
+    };
+
+    if (socket.handshake.session && socket.handshake.session.passport) {
+        handleUser(socket.handshake.session.passport.user);
     } else {
+        console.log('No session on connection');
         socket.emit('setUsername', { email: 'Guest' });
     }
 
+    socket.on('requestUsername', () => {
+        if (socket.handshake.session && socket.handshake.session.passport) {
+            handleUser(socket.handshake.session.passport.user);
+        } else {
+            console.log('No session on requestUsername');
+            socket.emit('setUsername', { email: 'Guest' });
+        }
+    });
+
     socket.on('joinRoom', (room) => {
-        if (!socket.handshake.session?.passport?.user) return;
+        if (!socket.request.user) {
+            console.log('Unauthorized join attempt');
+            return;
+        }
         socket.join(room);
+        console.log(`User ${socket.request.user.email} joined room: ${room}`);
         Message.find({ room }).sort({ timestamp: -1 }).limit(50).then(messages => {
             socket.emit('loadMessages', messages.reverse());
         }).catch(err => console.log('Error loading messages:', err));
     });
 
     socket.on('chatMessage', async ({ msg, room, username }) => {
-        if (!socket.handshake.session?.passport?.user || !msg.trim() || !room || !username) return;
+        if (!socket.request.user || !msg.trim() || !room || !username) {
+            console.log('Invalid chat message attempt');
+            return;
+        }
         const newMessage = new Message({ content: msg, username, room });
         try {
             await newMessage.save();
@@ -139,14 +189,32 @@ io.on('connection', (socket) => {
     });
 
     socket.on('logout', () => {
-        if (socket.handshake.session) socket.handshake.session.destroy();
+        if (socket.handshake.session) {
+            socket.handshake.session.destroy(err => {
+                if (err) console.log('Session destroy error:', err);
+            });
+        }
         socket.disconnect();
     });
 
-    socket.on('disconnect', () => console.log('User disconnected'));
+    socket.on('disconnect', () => {
+        console.log('User disconnected');
+    });
 });
 
-// Vercel compatibility
+// Vercel ke liye port dynamic rakho
 const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`Server on ${port}`));
+app.listen(port, () => {
+    console.log(`Server running on port ${port}`);
+});
+
+// Handle uncaught exceptions to prevent crash
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught Exception:', err.stack);
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason.stack);
+});
+
+// Vercel ke liye export
 module.exports = app;
