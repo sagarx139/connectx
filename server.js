@@ -16,14 +16,19 @@ const Message = require('./models/Message');
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server);
+const io = socketIo(server, {
+    cors: {
+        origin: "https://connectx-ashen.vercel.app", // Vercel URL
+        methods: ["GET", "POST"]
+    }
+});
 
 // Middleware
 const expressSession = session({
-    secret: 'your-secret-key', // Change to a strong, unique key
+    secret: process.env.SESSION_SECRET || 'your-secret-key', // Use env variable
     resave: false,
     saveUninitialized: true,
-    cookie: { secure: false }
+    cookie: { secure: process.env.NODE_ENV === 'production' } // Secure cookie for HTTPS
 });
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -97,7 +102,7 @@ app.post('/register', async (req, res) => {
 
 app.get('/', (req, res) => {
     console.log('Root page accessed, req.user:', req.user ? req.user.email : 'No user');
-    if (!req.user) return res.redirect('/login');
+    if (!req.user) return res.redirect('/login'); // Yeh ensure karega login redirect
     res.sendFile(__dirname + '/public/index.html');
 });
 
@@ -197,16 +202,19 @@ io.on('connection', (socket) => {
     });
 });
 
-// Start the server
-server.listen(3000, () => {
-    console.log('Server running on http://localhost:3000');
+// Vercel ke liye port dynamic rakho
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+    console.log(`Server running on port ${port}`);
 });
 
 // Handle uncaught exceptions to prevent crash
 process.on('uncaughtException', (err) => {
     console.error('Uncaught Exception:', err.stack);
-    // Restart server logic can be added here if needed
 });
 process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection at:', promise, 'reason:', reason.stack);
 });
+
+// Vercel ke liye export
+module.exports = app;
