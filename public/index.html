@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>ConnectX Chat</title>
+    <link href="/styles.css" rel="stylesheet">
+    <style>
+        #chat {
+            height: 400px;
+            overflow-y: auto;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+        .message {
+            margin: 10px 0;
+            padding: 8px;
+            border-radius: 5px;
+        }
+        .message.sent {
+            background: #3b82f6;
+            color: white;
+            text-align: right;
+        }
+        .message.received {
+            background: #e5e7eb;
+            color: black;
+        }
+        .alert {
+            color: #dc2626;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans">
+    <div class="max-w-2xl mx-auto bg-white rounded-lg shadow-md p-6 mt-6">
+        <h2 class="text-2xl font-bold text-center mb-6">ConnectX Chat</h2>
+
+        <!-- Username Input (from session) -->
+        <div class="flex items-center mb-4">
+            <input id="username" type="text" class="flex-1 p-2 border rounded-l-lg focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Username" value="" readonly>
+            <button class="bg-gray-500 text-white p-2 rounded-r-lg hover:bg-gray-600" onclick="logout()">Logout</button>
+            <span id="usernameAlert" class="alert ml-2" style="display:none;">Username not set!</span>
+        </div>
+
+        <!-- Room Input -->
+        <div class="flex items-center mb-4">
+            <input id="room" type="text" class="flex-1 p-2 border rounded-l-lg focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Enter room name" value="">
+            <button class="bg-blue-500 text-white p-2 rounded-r-lg hover:bg-blue-600" onclick="joinRoom()">Join Room</button>
+        </div>
+
+        <!-- Chat Area -->
+        <div id="chat" class="border bg-gray-200 mb-4"></div>
+
+        <!-- Message Input -->
+        <div class="flex items-center">
+            <input id="message" type="text" class="flex-1 p-2 border rounded-l-lg focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Type your message...">
+            <button class="bg-green-500 text-white p-2 rounded-r-lg hover:bg-green-600" onclick="sendMessage()">Send</button>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        let username = '';
+        let room = localStorage.getItem('room') || '';
+
+        // Set username from server
+        socket.on('setUsername', (data) => {
+            username = data.email || 'Guest';
+            document.getElementById('username').value = username;
+            document.getElementById('usernameAlert').style.display = 'none';
+            console.log('Username set to:', username);
+        });
+
+        // Request username if not set
+        socket.emit('requestUsername');
+
+        // Set initial room value
+        if (room) document.getElementById('room').value = room;
+
+        // Join Room
+        function joinRoom() {
+            room = document.getElementById('room').value;
+            if (room.trim()) {
+                localStorage.setItem('room', room);
+                socket.emit('joinRoom', room);
+            } else {
+                alert('Please enter a room name!');
+            }
+        }
+
+        // Send Message
+        function sendMessage() {
+            const msg = document.getElementById('message').value;
+            if (!username || username === 'Guest') {
+                document.getElementById('usernameAlert').style.display = 'inline';
+                alert('Username not set! Please login again or contact support.');
+                return;
+            }
+            if (msg.trim() && username && room.trim()) {
+                socket.emit('chatMessage', { msg, room, username });
+                document.getElementById('message').value = '';
+            } else {
+                alert('Please enter room and type a message!');
+            }
+        }
+
+        // Receive Message
+        socket.on('message', (msgObj) => {
+            const chat = document.getElementById('chat');
+            const messageClass = msgObj.username === username ? 'message sent' : 'message received';
+            chat.innerHTML += `<div class="${messageClass}"><strong>${msgObj.username}</strong>: ${msgObj.msg}</div>`;
+            chat.scrollTop = chat.scrollHeight;
+        });
+
+        // Load Message History
+        socket.on('loadMessages', (messages) => {
+            const chat = document.getElementById('chat');
+            chat.innerHTML = '';
+            messages.forEach(msg => {
+                const messageClass = msg.username === username ? 'message sent' : 'message received';
+                chat.innerHTML += `<div class="${messageClass}"><strong>${msg.username}</strong>: ${msg.content}</div>`;
+            });
+            chat.scrollTop = chat.scrollHeight;
+        });
+
+        // Logout
+        function logout() {
+            socket.emit('logout');
+            window.location.href = '/login';
+        }
+    </script>
+</body>
+</html>
