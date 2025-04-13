@@ -27,7 +27,7 @@ const io = socketIo(server, {
 const expressSession = session({
     secret: process.env.SESSION_SECRET || 'your-secret-key',
     resave: false,
-    saveUninitialized: true,
+    saveUninitialized: false, // Avoid unnecessary session creation
     cookie: { secure: process.env.NODE_ENV === 'production' }
 });
 app.use(express.json());
@@ -47,7 +47,7 @@ passport.use(new LocalStrategy(
         try {
             const user = await User.findOne({ email });
             if (!user) return done(null, false, { message: 'Incorrect email' });
-            const isMatch = await user.comparePassword(password);
+            const isMatch = await bcrypt.compare(password, user.password); // Ensure bcrypt
             if (!isMatch) return done(null, false, { message: 'Incorrect password' });
             return done(null, user);
         } catch (err) {
@@ -66,10 +66,14 @@ passport.deserializeUser(async (id, done) => {
     }
 });
 
-// Connect to MongoDB
-mongoose.connect(process.env.MONGODB_URI)
-    .then(() => console.log('Connected to MongoDB'))
-    .catch((err) => console.log('MongoDB connection error:', err));
+// Connect to MongoDB with retry
+mongoose.connect(process.env.MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+    serverSelectionTimeoutMS: 5000,
+    autoIndex: false
+}).then(() => console.log('Connected to MongoDB'))
+  .catch((err) => console.log('MongoDB connection error:', err.message));
 
 // Routes
 app.get('/login', (req, res) => res.sendFile(__dirname + '/public/login.html'));
@@ -83,7 +87,8 @@ app.post('/register', async (req, res) => {
     try {
         const existingUser = await User.findOne({ email });
         if (existingUser) return res.status(400).send('User already exists');
-        const user = new User({ email, password });
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const user = new User({ email, password: hashedPassword });
         await user.save();
         res.redirect('/login');
     } catch (err) {
@@ -98,16 +103,14 @@ app.get('/', (req, res) => {
 
 // Socket.io setup
 io.use(sharedSession(expressSession, {
-    autoSave: true,
-    saveUninitialized: true
+    autoSave: true
 }));
 
 io.on('connection', (socket) => {
     console.log('New user connected');
     if (socket.handshake.session?.passport?.user) {
         User.findById(socket.handshake.session.passport.user).then(user => {
-            if (user) socket.emit('setUsername', { email: user.email });
-            else socket.emit('setUsername', { email: 'Guest' });
+            socket.emit('setUsername', { email: user ? user.email : 'Guest' });
         }).catch(err => {
             console.log('Error finding user:', err);
             socket.emit('setUsername', { email: 'Guest' });
@@ -117,7 +120,7 @@ io.on('connection', (socket) => {
     }
 
     socket.on('joinRoom', (room) => {
-        if (!socket.request.user) return;
+        if (!socket.handshake.session?.passport?.user) return;
         socket.join(room);
         Message.find({ room }).sort({ timestamp: -1 }).limit(50).then(messages => {
             socket.emit('loadMessages', messages.reverse());
@@ -125,7 +128,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('chatMessage', async ({ msg, room, username }) => {
-        if (!socket.request.user || !msg.trim() || !room || !username) return;
+        if (!socket.handshake.session?.passport?.user || !msg.trim() || !room || !username) return;
         const newMessage = new Message({ content: msg, username, room });
         try {
             await newMessage.save();
@@ -143,7 +146,7 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => console.log('User disconnected'));
 });
 
-// Vercel ke liye
+// Vercel compatibility
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`Server on ${port}`));
 module.exports = app;
